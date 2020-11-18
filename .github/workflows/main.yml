@@ -1,0 +1,90 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the action will run. Triggers the workflow on push or pull request
+# events but only for the master branch
+on:
+  pull_request:
+    branches: [ master ]
+    types: [opened, synchronize, reopened]
+
+env:
+  IMAGE_NAME: vote-appb
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  preview:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+        
+      - name: Build image
+        run: docker build . --file Dockerfile --tag $IMAGE_NAME
+    
+      - uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Push image
+        id: image
+        run: |
+          IMAGE_ID=${{ secrets.ACR_SERVER }}/$IMAGE_NAME
+          # Change all uppercase to lowercase
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          
+          PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH")
+          # Strip git ref prefix from version
+          VERSION=$(echo PR-$PR_NUMBER-${{ github.sha }} | tr '[A-Z]' '[a-z]')
+          echo ::set-output name=image::$IMAGE_ID:$VERSION
+          
+          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:$VERSION
+  
+      - uses: azure/aks-set-context@v1
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}' # Azure credentials
+          resource-group: 'aks'
+          cluster-name: 'ephemeral'
+        id: login
+
+      - name: Create namespaces
+        id: ns
+        run: |
+          PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH")
+          NS=pr-$PR_NUMBER
+          
+          echo ::set-output name=namespace::$NS
+          
+          kubectl create ns $NS --dry-run=client -o yaml | kubectl apply -f -
+      
+      - uses: Azure/k8s-deploy@v1
+        with:
+          namespace: ${{ steps.ns.outputs.namespace }}
+          manifests: |
+            manifest.yaml
+          images: |
+            ${{ steps.image.outputs.image }}
+        
+      - name: Get ip
+        id: ip
+        run: |
+          IP=$(kubectl get svc -n ${{ steps.ns.outputs.namespace }} azure-vote-front --output jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo ::set-output name=ip::$IP
+  
+      - uses: actions/github-script@v1
+        with:
+          script: |
+            github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: "Env URL is http://${{ steps.ip.outputs.ip }}:80"
+            })
