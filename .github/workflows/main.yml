@@ -10,7 +10,7 @@ on:
     types: [opened, synchronize, reopened]
 
 env:
-  IMAGE_NAME: vote-appb
+  IMAGE_NAME: vote-app
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
